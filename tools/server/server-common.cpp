@@ -521,11 +521,10 @@ ignore_thinking_lcp_result server_tokens::get_common_prefix_ignore_thinking(cons
                 continue;
             }
 
-            cache_prefix_len = i + len_cached_thinking;
+            return {i + len_cached_thinking, i};
+
         }
-        cache_prefix_len =   max_idx; 
-        task_prefix_len  =   max_idx - len_cached_thinking;
-        return {cache_prefix_len, task_prefix_len};
+        return {max_idx, max_idx - len_cached_thinking};
     }
     else {
         return {0, 0}; // not implemented for MTMD-enabled server_tokens yet
