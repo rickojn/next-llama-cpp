@@ -984,7 +984,7 @@ private:
                 }
 
                 // fraction of the Longest Common Prefix length with respect to the input prompt length
-                const float sim_cur = float(tokens.get_common_prefix(task.tokens)) / task.tokens.size();
+                const float sim_cur = float(tokens.get_common_prefix_pos_in_cache(task.tokens)) / task.tokens.size();
 
                 // select the current slot if the criteria match
                 if (sim_cur > sim_best && sim_cur > slot_prompt_similarity) {
@@ -2214,6 +2214,7 @@ private:
 
                         // keep track how many tokens we can reuse from the previous state
                         int n_past = 0;
+                        int n_past_new = 0;
 
                         // empty prompt passed -> release the slot and send empty response
                         if (input_tokens.empty()) {
@@ -2268,7 +2269,10 @@ private:
 
                             if (slot.task->params.cache_prompt) {
                                 // reuse any previously computed tokens that are common with the new prompt
-                                n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
+                                n_past = slot.prompt.tokens.get_common_prefix_pos_in_cache(input_tokens);
+                                n_past_new = slot.prompt.tokens.get_common_prefix_pos_in_new(input_tokens);
+
+                                SLT_INF(slot, "BLUFFER common prefix with cached prompt: n_past = %d, n_past_new = %d\n", n_past, n_past_new);
 
                                 // if there is an alora invoked, don't cache after the invocation start
                                 if (slot.alora_invocation_start > 0) {
@@ -2287,11 +2291,13 @@ private:
                                 }
 
                                 // reuse chunks from the cached prompt by shifting their KV cache in the new position
+                                SLT_INF(slot, "BLUFFER can_cache_reuse = %d, n_cache_reuse = %d\n", can_cache_reuse, n_cache_reuse);
                                 if (can_cache_reuse && n_cache_reuse > 0) {
+                                    SRV_INF("BLUFFER can_cache_reuse = true and n_cache_reuse > 0, n_cache_reuse = %d\n", n_cache_reuse);
                                     GGML_ASSERT(!slot.prompt.tokens.has_mtmd);
 
                                     size_t head_c = n_past; // cache
-                                    size_t head_p = n_past; // current prompt
+                                    size_t head_p = n_past_new; // current prompt
 
                                     if (mctx) {
                                         // we should never reach this
@@ -2309,6 +2315,7 @@ private:
                                                slot.prompt.tokens[head_c + n_match] == input_tokens[head_p + n_match]) {
                                             n_match++;
                                         }
+                                        SLT_INF(slot, "found matching chunk with size %zu at cache pos %zu and prompt pos %zu\n", n_match, head_c, head_p);
 
                                         if (n_match >= (size_t) n_cache_reuse) {
                                             SLT_INF(slot, "reusing chunk with size %zu, shifting KV cache [%zu, %zu) -> [%zu, %zu)\n", n_match, head_c, head_c + n_match, head_p, head_p + n_match);
@@ -2340,7 +2347,10 @@ private:
                                 n_past = 0;
                             }
 
-                            llama_pos pos_next = slot.prompt.tokens.pos_next(n_past);
+                            // llama_pos pos_next = slot.prompt.tokens.pos_next(n_past);
+                            llama_pos pos_next = slot.prompt.tokens.pos_next(n_past_new);
+                            SLT_INF(slot, "BLUFFER pos_next = %d\n", pos_next);
+
 
                             // note: when n_swa == 0, the model does not use SWA
                             const auto n_swa = std::max(0, llama_model_n_swa(model));
@@ -2463,6 +2473,11 @@ private:
 
                         slot.n_prompt_tokens_cache = n_past;
                         slot.n_prompt_tokens_processed = 0;
+                        SLT_INF(slot, "keeping n_past = %d tokens in the cache\n", n_past);
+                        SLT_INF(slot, "BLUFF: detokenised prompt tokens:\n %s\n", slot.prompt.tokens.detokenize(ctx, true).c_str());
+                        SLT_INF(slot, "BLUFF: detokensed task tokens:\n %s\n", slot.task->tokens.detokenize(ctx, true).c_str());
+
+
 
                         slot.prompt.tokens.keep_first(n_past);
 
@@ -2551,9 +2566,22 @@ private:
                     }
 
                     // add prompt tokens for processing in the current batch
-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.n_tokens < n_batch) {
+                    size_t pos_first_new_token, pos_first_new_token_cache, diff = 0;
+                    pos_first_new_token = slot.prompt.tokens.get_common_prefix_pos_in_new(input_tokens);
+                    pos_first_new_token_cache = slot.prompt.tokens.get_common_prefix_pos_in_cache(input_tokens);
+                    diff = pos_first_new_token_cache - pos_first_new_token;
+                    SRV_INF("BLUFFER pos_first_new_token = %zu\n", pos_first_new_token);
+                    SRV_INF("BLUFFER pos_first_new_token_cache = %zu\n", pos_first_new_token_cache);
+                    SRV_INF("BLUFFER diff = %zu\n", diff);
+                    SRV_INF("BLUFFER slot.prompt.tokens.size() = %zu\n", slot.prompt.tokens.size());
+                    SRV_INF("BLUFFER slot.prompt.n_tokens() = %zu\n", slot.prompt.n_tokens());
+                    SRV_INF("BLUFFER slot.task->n_tokens() = %zu\n", slot.task->n_tokens());
+                    while (slot.prompt.n_tokens() < slot.task->n_tokens() + (int)diff && batch.n_tokens < n_batch) {
                         // get next token to process
-                        llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                        // llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                        llama_token cur_tok = input_tokens[pos_first_new_token];
+                        pos_first_new_token++;
+                        SRV_INF("BLUFFER next token position will be %zu\n", pos_first_new_token);
                         if (cur_tok == LLAMA_TOKEN_NULL) {
                             break; // end of text chunk
                         }
@@ -2602,7 +2630,7 @@ private:
                     const auto n_tokens_cur = batch.n_tokens - n_tokens_prev;
 
                     // entire prompt has been processed
-                    if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
+                    if (slot.prompt.n_tokens() == slot.task->n_tokens() + diff) {
                         slot.state = SLOT_STATE_DONE_PROMPT;
 
                         GGML_ASSERT(batch.n_tokens > 0);
@@ -2726,6 +2754,7 @@ private:
 
         int32_t i_next = 0;
 
+
         // process the created batch of tokens
         for (int32_t i = 0; i < batch.n_tokens; i = i_next) {
             const int32_t n_tokens = std::min(n_batch, batch.n_tokens - i);
@@ -2739,6 +2768,17 @@ private:
                 batch.seq_id   + i,
                 batch.logits   + i,
             };
+
+            // build string of detokenized batch tokens for logging
+
+            std::stringstream ss;
+            for (int j = 0; j < n_tokens; j++) {
+                const auto token = batch_view.token[j];
+                const auto piece = token != LLAMA_TOKEN_NULL ? common_token_to_piece(ctx, token) : "[mtmd]";
+                ss << piece << " ";
+            }
+            SRV_INF("BLUFFER decoding batch tokens: '%s'\n", ss.str().c_str());
+
 
             const int ret = llama_decode(ctx, batch_view);
 
