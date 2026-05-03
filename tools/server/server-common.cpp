@@ -499,6 +499,41 @@ size_t server_tokens::get_common_prefix(const server_tokens & b) const {
     return max_idx; // all tokens are equal
 }
 
+ignore_thinking_lcp_result server_tokens::get_common_prefix_ignore_thinking(const server_tokens & b) const {
+    const size_t max_idx = std::min(tokens.size(), b.tokens.size());
+    size_t cache_prefix_len, task_prefix_len = 0;
+
+    if (!has_mtmd) {
+        int32_t start_thinking = 151667; // the token id for <thinking>
+        int32_t end_thinking = 151668; // the token id for </thinking>
+        size_t len_cached_thinking = 0;
+        for (size_t i = 0; i + len_cached_thinking < max_idx; ++i) {
+            if (tokens[i + len_cached_thinking] == b.tokens[i]) {
+                continue;
+            }
+            if  (tokens[i + len_cached_thinking] == start_thinking ) {
+                while (i + len_cached_thinking < max_idx && 
+                    tokens[i + len_cached_thinking] != end_thinking) {
+                    len_cached_thinking++;
+                }
+                len_cached_thinking+=2; // skip end_thinking and new line after thinking
+                i--; // recompare the new token
+                continue;
+            }
+
+            cache_prefix_len = i + len_cached_thinking;
+        }
+        cache_prefix_len =   max_idx; 
+        task_prefix_len  =   max_idx - len_cached_thinking;
+        return {cache_prefix_len, task_prefix_len};
+    }
+    else {
+        return {0, 0}; // not implemented for MTMD-enabled server_tokens yet
+    }
+
+}
+
+
 bool server_tokens::validate(const struct llama_context * ctx) const {
     const llama_model * model = llama_get_model(ctx);
     const llama_vocab * vocab = llama_model_get_vocab(model);

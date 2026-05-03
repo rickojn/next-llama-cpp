@@ -117,6 +117,13 @@ bool are_lora_equal(
 // get the ids of all enabled loras
 std::vector<size_t> lora_get_enabled_ids(const std::vector<common_adapter_lora_info> & loras);
 
+
+    struct ignore_thinking_lcp_result {
+    size_t cache_prefix_len;
+    size_t task_prefix_len;
+};
+
+
 //
 // server_tokens
 //
@@ -209,6 +216,9 @@ public:
     std::string detokenize(const llama_context * ctx, bool special) const;
 
     size_t get_common_prefix(const server_tokens & b) const;
+
+
+    ignore_thinking_lcp_result get_common_prefix_ignore_thinking(const server_tokens & b) const;
 
     // make sure all text tokens are within the vocab range
     bool validate(const struct llama_context * ctx) const;
@@ -381,3 +391,5 @@ server_tokens format_prompt_rerank(
         mtmd_context * mctx,
         const std::string & query,
         const std::string & doc);
+
+

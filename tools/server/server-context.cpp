@@ -984,7 +984,7 @@ private:
                 }
 
                 // fraction of the Longest Common Prefix length with respect to the input prompt length
-                const float sim_cur = float(tokens.get_common_prefix(task.tokens)) / task.tokens.size();
+                const float sim_cur = float(tokens.get_common_prefix_ignore_thinking(task.tokens).cache_prefix_len) / task.tokens.size();
 
                 // select the current slot if the criteria match
                 if (sim_cur > sim_best && sim_cur > slot_prompt_similarity) {
@@ -2213,7 +2213,9 @@ private:
                         }*/
 
                         // keep track how many tokens we can reuse from the previous state
+
                         int n_past = 0;
+                        int n_past_new = 0;
 
                         // empty prompt passed -> release the slot and send empty response
                         if (input_tokens.empty()) {
@@ -2232,6 +2234,7 @@ private:
                             slot.release();
                             continue;
                         }
+
 
                         if (!slot.can_split()) {
                             if (slot.task->n_tokens() > n_ubatch) {
@@ -2268,7 +2271,10 @@ private:
 
                             if (slot.task->params.cache_prompt) {
                                 // reuse any previously computed tokens that are common with the new prompt
-                                n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
+                                ignore_thinking_lcp_result result_prompt_progress = slot.prompt.tokens.get_common_prefix_ignore_thinking(input_tokens);
+                                n_past = result_prompt_progress.cache_prefix_len;
+                                n_past_new = result_prompt_progress.task_prefix_len;
+
 
                                 // if there is an alora invoked, don't cache after the invocation start
                                 if (slot.alora_invocation_start > 0) {
@@ -2291,7 +2297,7 @@ private:
                                     GGML_ASSERT(!slot.prompt.tokens.has_mtmd);
 
                                     size_t head_c = n_past; // cache
-                                    size_t head_p = n_past; // current prompt
+                                    size_t head_p = n_past_new; // current prompt
 
                                     if (mctx) {
                                         // we should never reach this
@@ -2333,7 +2339,7 @@ private:
                                         }
                                     }
 
-                                    SLT_DBG(slot, "after context reuse, new n_past = %d\n", n_past);
+                                    SLT_DBG(slot, "after context reuse, new n_past = %d\n", n_past_new);
                                 }
                             } else {
                                 // if we don't cache the prompt, we have to remove all previous tokens
@@ -2551,9 +2557,14 @@ private:
                     }
 
                     // add prompt tokens for processing in the current batch
+                    size_t pos_first_new_token, pos_first_new_token_cache, diff = 0;
+                    ignore_thinking_lcp_result result_prompt_progress = slot.prompt.tokens.get_common_prefix_ignore_thinking(input_tokens);
+                    pos_first_new_token = result_prompt_progress.task_prefix_len;
+                    pos_first_new_token_cache = result_prompt_progress.cache_prefix_len;
+                    diff = pos_first_new_token_cache - pos_first_new_token;
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.n_tokens < n_batch) {
                         // get next token to process
-                        llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                        llama_token cur_tok = input_tokens[pos_first_new_token];
                         if (cur_tok == LLAMA_TOKEN_NULL) {
                             break; // end of text chunk
                         }
@@ -2602,7 +2613,7 @@ private:
                     const auto n_tokens_cur = batch.n_tokens - n_tokens_prev;
 
                     // entire prompt has been processed
-                    if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
+                    if (slot.prompt.n_tokens() == slot.task->n_tokens() + diff) {
                         slot.state = SLOT_STATE_DONE_PROMPT;
 
                         GGML_ASSERT(batch.n_tokens > 0);
